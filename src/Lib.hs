@@ -28,6 +28,11 @@ import           Store
 
 newtype CustomerId = CustomerId UUID deriving (Eq, Ord, Generic)
 
+instance FromHttpApiData CustomerId where
+  parseUrlPiece x = case (fromString . unpack) x of
+                      Nothing   -> Left "CustomerId"
+                      (Just id) -> Right (CustomerId id)
+
 instance Show CustomerId where
   show (CustomerId uuid) = show uuid
 
@@ -45,7 +50,7 @@ instance FromJSON CustomerId where
   parseJSON v = typeMismatch "Invalid CustomerId " v
 
 customerStream :: CustomerId -> Text
-customerStream (CustomerId uuid) = "policy:" E.<> pack (toString uuid)
+customerStream (CustomerId uuid) = "customer:" E.<> pack (toString uuid)
 
 data AppConfig = AppConfig
   { esConnection :: E.Connection }
@@ -54,6 +59,18 @@ data User = User
   { userId        :: Int
   , userFirstName :: String
   , userLastName  :: String
+  } deriving (Eq, Show)
+
+data CreateCustomerRequest = CreateCustomerRequest
+  { createCustomerName :: Text
+  , createCustomerAddress :: Text
+  } deriving (Eq, Show)
+
+
+data CustomerDTO = CustomerDTO
+  { dtoCustomerId :: CustomerId
+  , dtoCustomerName :: Text
+  , dtoCustomerAddress :: Text
   } deriving (Eq, Show)
 
 data CustomerCommand
@@ -81,17 +98,22 @@ data CustomerSnapshot
 
 $(deriveJSON defaultOptions ''User)
 $(deriveJSON defaultOptions ''CustomerEvent)
+$(deriveJSON defaultOptions ''CustomerDTO)
+$(deriveJSON defaultOptions ''CreateCustomerRequest)
 
 type ApiHandler = ReaderT AppConfig Handler
 
 readerToEither :: AppConfig -> ApiHandler :~> Handler
 readerToEither cfg = Nat $ \x -> runReaderT x cfg
 
-type API = "user" :> Get '[JSON] User
-      :<|> "user" :> ReqBody '[JSON] User :> Post '[JSON] NoContent
+type API = "customer" :> Capture "customerId" CustomerId :>  Get '[JSON] CustomerDTO
+      :<|> "customer" :> ReqBody '[JSON] CreateCustomerRequest :> Post '[JSON] NoContent
 
 seed :: CustomerSnapshot
 seed =  CustomerSnapshot "" ""
+
+snapshot :: Customer -> IO CustomerSnapshot
+snapshot Customer {..} = readTVarIO _var
 
 apply :: CustomerSnapshot -> CustomerCommand -> CustomerSnapshot
 apply s (CreateCustomer cid name address) = createCustomer s cid name address
@@ -152,14 +174,18 @@ apiServer cfg = enter (readerToEither cfg) server
 server :: ServerT API ApiHandler
 server = load :<|> create
 
-load :: ApiHandler User
-load = return $ User 1 "Isaac" "Newton"
+load :: CustomerId -> ApiHandler CustomerDTO
+load cid = do
+  cfg <- ask
+  snap <- liftIO $ buildCustomer (esConnection cfg) cid >>= snapshot
+  return $ CustomerDTO cid (customerName snap) (customerAddress snap)
 
-create :: User -> ApiHandler NoContent
-create u = do
+
+create :: CreateCustomerRequest -> ApiHandler NoContent
+create (CreateCustomerRequest name address) = do
   cfg <- ask
   uuid <- liftIO nextRandom
   let customerId = CustomerId uuid
-      cmd = CreateCustomer customerId "Joe Average" "10 Good enough road"
+      cmd = CreateCustomer customerId name address
   _ <- liftIO $ execute (esConnection cfg) customerId cmd
   return NoContent
