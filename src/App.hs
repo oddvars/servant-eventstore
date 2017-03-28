@@ -21,7 +21,3 @@ startApp = do
   conn <- E.connect E.defaultSettings (E.Static "127.0.0.1" 1113)
   let cfg = AppConfig {esConnection = conn}
   run 9000 $ app cfg
-
-app :: AppConfig -> Application
-app cfg = serve api (apiServer cfg)
-
