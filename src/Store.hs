@@ -36,11 +36,11 @@ streamFold :: FromJSON a
            -> (s -> a -> Maybe UTCTime -> IO s)
            -> s
            -> IO s
-streamFold conn stream k seed = go 0 seed
+streamFold conn stream k = go 0
   where
     go start s = do
         act <- readStreamEventsForward conn stream start 500 False
-        res <- wait act
+        res <- waitAsync act
         case res of
             ReadSuccess sl -> do
                 let foldF ss revt =

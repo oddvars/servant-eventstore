@@ -44,8 +44,8 @@ newCustomer _conn (CreateCustomer cid name address) = do
       evt = toEvent cmd
       _id = cid
   writeEvents <- E.sendEvent _conn (customerStream _id) E.noStreamVersion evt
+  _ <- E.waitAsync writeEvents
   atomically $ do
-    _ <- E.waitSTM writeEvents
     let p = apply seed cmd
     _var <- newTVar p
     return $ Just Customer {..}
@@ -67,10 +67,10 @@ createCustomer snap cid name address =
 
 execute :: E.Connection -> CustomerId -> CustomerCommand -> IO ()
 execute _conn _id cmd = do
-  writeEvent <- E.sendEvent _conn (customerStream _id) E.anyVersion (toEvent cmd)
-  atomically $ do
-    _ <- E.waitSTM writeEvent
-    return ()
+  let evt = toEvent cmd
+  writeEvent <- E.sendEvent _conn (customerStream _id) E.anyVersion evt
+  _ <- E.waitAsync writeEvent
+  return ()
 
 toEvent :: CustomerCommand -> E.Event
 toEvent (CreateCustomer customerId name address) =
