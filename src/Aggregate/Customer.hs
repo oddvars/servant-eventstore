@@ -58,10 +58,10 @@ buildCustomer conn customerId = do
   return $ Customer conn customerId var
   where
     customer s (CustomerCreated cid name address ) _ = return $ createCustomer s cid name address
-    customer s _                                   _ = return $ s
+    customer s _                                   _ = return s
 
 createCustomer :: CustomerSnapshot -> CustomerId -> Text -> Text -> CustomerSnapshot
-createCustomer snap cid name address =
+createCustomer snap _ name address =
   snap { customerName = name
        , customerAddress = address }
 

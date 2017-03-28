@@ -39,7 +39,8 @@ instance FromJSON CustomerId where
 
 
 data AppConfig = AppConfig
-  { esConnection :: E.Connection }
+  { esConnection :: E.Connection
+  , staticPath :: FilePath }
 
 data CreateCustomerRequest = CreateCustomerRequest
   { createCustomerName :: Text

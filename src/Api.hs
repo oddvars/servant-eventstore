@@ -15,7 +15,7 @@ type ApiHandler = ReaderT AppConfig Handler
 type API = "customer" :> Capture "customerId" CustomerId :>  Get '[JSON] CustomerDTO
       :<|> "customer" :> ReqBody '[JSON] CreateCustomerRequest :> Post '[JSON] NoContent
 
-type WholeAPI = API :<|> Raw
+type WholeAPI = API :<|> "static" :> Raw
 
 api :: Proxy API
 api = Proxy
@@ -31,7 +31,7 @@ server = load :<|> create
 
 apiServer :: AppConfig -> Server WholeAPI
 apiServer cfg = enter (readerToEither cfg) server
-           :<|> serveDirectory "/static"
+           :<|> serveDirectory  (staticPath cfg)
 
 readerToEither :: AppConfig -> ApiHandler :~> Handler
 readerToEither cfg = Nat $ \x -> runReaderT x cfg
