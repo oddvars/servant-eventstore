@@ -1,79 +1,77 @@
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PolyKinds #-}
 
 module Aggregate.Customer where
 
-import           Control.Concurrent.STM
-import           Data.Monoid ((<>))
+import           Aggregate.Class
+import           Data.Aeson
 import           Data.Text (Text, pack)
-import           Data.UUID (toString)
 import qualified Database.EventStore as E
+import           GHC.Generics
 import           Store
 import           Types
 
-data CustomerSnapshot
-  = CustomerSnapshot
-  { customerName :: Text
+data Customer=
+  Customer
+  { customerId :: CustomerId
+  , customerName :: Text
   , customerAddress :: Text
-  }
+  , customerLedgerId :: Maybe LedgerId
+  } deriving Show
 
-data Customer
-  = Customer
-  { _conn :: E.Connection
-  , _id :: CustomerId
-  , _var :: TVar CustomerSnapshot
-  }
+instance Aggregate Customer where
+  data AggregateCommand Customer =
+      CreateCustomer CustomerId Text Text
+    | RelocateCustomer CustomerId Text
+    | AttachLedger CustomerId LedgerId
+    deriving Show
 
-customerStream :: CustomerId -> Text
-customerStream (CustomerId uuid) = "customer:" <> pack (toString uuid)
+  data AggregateEvent Customer =
+      CustomerCreated CustomerId Text Text
+    | CustomerRelocated CustomerId Text
+    | LedgerAttached CustomerId LedgerId
+    deriving (Generic, Show)
 
-seed :: CustomerSnapshot
-seed =  CustomerSnapshot "" ""
+  data AggregateError Customer =
+      CustomerExists
+    | InvalidAddress
+    | InvalidCreateCustomerCommand Text
+    | LedgerAlreadyAttached
+    deriving Show
 
-snapshot :: Customer -> IO CustomerSnapshot
-snapshot Customer {..} = readTVarIO _var
+  apply state e _ = return (apply' state e)
 
-apply :: CustomerSnapshot -> CustomerCommand -> CustomerSnapshot
-apply s (CreateCustomer cid name address) = createCustomer s cid name address
-apply s _                                 = s
+  apply' state (CustomerCreated cid n a) = state { customerId = cid, customerName = n, customerAddress = a }
+  apply' state (CustomerRelocated _ a)   = state { customerAddress = a }
+  apply' state (LedgerAttached _ lid)    = state { customerLedgerId = Just lid }
 
-newCustomer :: E.Connection -> CustomerCommand -> IO (Maybe Customer)
-newCustomer _conn (CreateCustomer cid name address) = do
-  let cmd = CreateCustomer cid name address
-      evt = toEvent cmd
-      _id = cid
-  writeEvents <- E.sendEvent _conn (customerStream _id) E.noStreamVersion evt
-  _ <- E.waitAsync writeEvents
-  atomically $ do
-    let p = apply seed cmd
-    _var <- newTVar p
-    return $ Just Customer {..}
-newCustomer _conn _ = return Nothing
+  execute' _ (CreateCustomer cid n a) = Right (CustomerCreated cid n a)
+  execute' _ (RelocateCustomer cid a) = Right (CustomerRelocated cid a)
+  execute' _ (AttachLedger cid lid)   = Right (LedgerAttached cid lid)
 
-buildCustomer :: E.Connection -> CustomerId -> IO Customer
-buildCustomer conn customerId = do
-  s   <- streamFold conn (customerStream customerId) customer seed
-  var <- newTVarIO s
-  return $ Customer conn customerId var
-  where
-    customer s (CustomerCreated cid name address ) _ = return $ createCustomer s cid name address
-    customer s _                                   _ = return s
+  toESEvent e@CustomerCreated {}   = createEvent "customer-created" Nothing $ withJson e
+  toESEvent e@CustomerRelocated {} = createEvent "customer-relocated" Nothing $ withJson e
+  toESEvent e@LedgerAttached {}    = createEvent "customer-ledger-attached" Nothing $ withJson e
 
-createCustomer :: CustomerSnapshot -> CustomerId -> Text -> Text -> CustomerSnapshot
-createCustomer snap _ name address =
-  snap { customerName = name
-       , customerAddress = address }
+  seed :: HasId b => b -> Customer
+  seed uuid = Customer (CustomerId (toUUID uuid)) "" "" Nothing
 
-execute :: E.Connection -> CustomerId -> CustomerCommand -> IO ()
-execute _conn _id cmd = do
-  let evt = toEvent cmd
-  writeEvent <- E.sendEvent _conn (customerStream _id) E.anyVersion evt
-  _ <- E.waitAsync writeEvent
-  return ()
+  streamName c = "customer:" <> pack aggregateId
+    where aggregateId = show (customerId c)
 
-toEvent :: CustomerCommand -> E.Event
-toEvent (CreateCustomer customerId name address) =
-  E.createEvent "customer-created" Nothing $
-    E.withJson (CustomerCreated customerId name address)
+instance FromJSON (AggregateEvent Customer)
+instance ToJSON   (AggregateEvent Customer)
 
+loadCustomer :: E.Connection -> CustomerId -> IO Customer
+loadCustomer conn cid =
+  buildAggregate conn (seed cid)
+
+newCustomer :: E.Connection -> AggregateCommand Customer -> IO (Either (AggregateError Customer) Customer)
+newCustomer _conn cmd@(CreateCustomer _id _ _) =
+  doCommand' _conn (seed _id :: Customer) cmd E.noStreamVersion
+newCustomer _ cmd = return $ Left (InvalidCreateCustomerCommand (pack . show $ cmd))

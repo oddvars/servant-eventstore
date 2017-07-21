@@ -1,11 +1,13 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies      #-}
-module Store (streamFold, forSub) where
+module Store (pushEvent, buildAggregate, doCommand') where
 
 ------------------------------------------------------------------------------
 import Prelude
 import Control.Monad
 
 -------------------------------------------------------------------------------
+import Control.Concurrent.STM
 import Data.Aeson.Parser (value)
 import Data.Aeson.Types
 import Data.Attoparsec.ByteString (parseOnly)
@@ -14,6 +16,22 @@ import Data.Foldable (traverse_)
 import Data.Text (Text)
 import Data.Time hiding (parseTime)
 import Database.EventStore
+import Aggregate.Class
+
+doCommand' :: Aggregate e => Connection -> e -> AggregateCommand e -> ExpectedVersion -> IO (Either (AggregateError e) e)
+doCommand' _conn s cmd v =
+  case execute' s cmd of
+             (Right evt) -> pushEvent _conn s (toESEvent evt) v
+             (Left err) -> return $ Left err
+
+pushEvent :: Aggregate a => Connection -> a -> Event -> ExpectedVersion -> IO (Either (AggregateError a) a)
+pushEvent _conn agg evt v = do
+  writeEvent <- sendEvent _conn (streamName agg) v evt
+  _ <- waitAsync writeEvent
+  return (Right agg)
+
+buildAggregate :: (FromJSON (AggregateEvent a), Aggregate a) => Connection -> a -> IO a
+buildAggregate conn agg = streamFold conn (streamName agg) apply agg
 
 ------------------------------------------------------------------------------
 parseTime :: ByteString -> Maybe UTCTime
@@ -30,10 +48,10 @@ parseTime bs =
 
 -----------------------------------------------------------------------------
 -- | Left fold a stream of events from the begining given a state seed.
-streamFold :: FromJSON a
+streamFold :: (FromJSON (AggregateEvent a))
            => Connection
            -> Text
-           -> (s -> a -> Maybe UTCTime -> IO s)
+           -> (s -> AggregateEvent a -> Maybe UTCTime -> IO s)
            -> s
            -> IO s
 streamFold conn stream k = go 0
